@@ -3,6 +3,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { dirname, extname, join, normalize as normalizePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import pg from 'pg';
 
 const port = Number(process.env.PORT || 8787);
 const model = process.env.OPENAI_MODEL || 'gpt-5.4-mini';
@@ -11,15 +12,22 @@ const dataDir = join(projectRoot, 'data');
 const dbFile = join(dataDir, 'applypilot.sqlite');
 const legacyStateFile = join(dataDir, 'app-state.json');
 const staticRoot = join(projectRoot, 'dist');
+const { Pool } = pg;
 
 await mkdir(dataDir, { recursive: true });
 
-const db = new DatabaseSync(dbFile);
-initializeDatabase();
+const storage = process.env.DATABASE_URL ? createPostgresStorage() : createSqliteStorage();
+await storage.initialize();
 await migrateLegacyJsonState();
 
-function initializeDatabase() {
-  db.exec(`
+function createSqliteStorage() {
+  const db = new DatabaseSync(dbFile);
+
+  return {
+    type: 'sqlite',
+    label: `SQLite database: ${dbFile}`,
+    initialize() {
+      db.exec(`
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -50,25 +58,231 @@ function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_applications_interview_at ON applications(interview_at);
     CREATE INDEX IF NOT EXISTS idx_profile_versions_created_at ON profile_versions(created_at);
   `);
+    },
+    countApplications() {
+      return Number(db.prepare('SELECT COUNT(*) AS count FROM applications').get().count ?? 0);
+    },
+    getSetting(key) {
+      return db.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value ?? null;
+    },
+    setSetting(key, value) {
+      db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, String(value));
+    },
+    listApplications() {
+      return db
+        .prepare('SELECT data FROM applications ORDER BY score DESC, created_at DESC')
+        .all()
+        .map((row) => JSON.parse(row.data));
+    },
+    replaceApplications(state) {
+      db.exec('BEGIN');
+
+      try {
+        db.prepare('DELETE FROM applications').run();
+
+        for (const application of state.applications) {
+          db.prepare(
+            `INSERT INTO applications
+              (id, data, status, score, created_at, applied_at, interview_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          ).run(
+            application.id,
+            JSON.stringify(application),
+            String(application.status ?? 'Saved'),
+            Number(application.score ?? 0),
+            application.createdAt ?? null,
+            application.appliedAt ?? null,
+            application.interviewAt ?? null,
+            state.updatedAt,
+          );
+        }
+
+        this.setSetting('dailyTarget', String(state.dailyTarget));
+        this.setSetting('currentProfile', state.profile);
+        this.setSetting('updatedAt', state.updatedAt);
+        db.exec('COMMIT');
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
+    },
+    listProfileVersions() {
+      return db
+        .prepare('SELECT id, name, content, source, created_at AS createdAt FROM profile_versions ORDER BY created_at DESC')
+        .all();
+    },
+    insertProfileVersion(version) {
+      db.prepare('INSERT INTO profile_versions (id, name, content, source, created_at) VALUES (?, ?, ?, ?, ?)').run(
+        version.id,
+        version.name,
+        version.content,
+        version.source,
+        version.createdAt,
+      );
+    },
+    getProfileVersion(profileId) {
+      return db.prepare('SELECT id, content FROM profile_versions WHERE id = ?').get(String(profileId)) ?? null;
+    },
+    deleteProfileVersion(profileId) {
+      db.prepare('DELETE FROM profile_versions WHERE id = ?').run(String(profileId));
+    },
+  };
+}
+
+function createPostgresStorage() {
+  const connectionString = process.env.DATABASE_URL;
+  const databaseUrl = new URL(connectionString);
+  const localDatabase = ['localhost', '127.0.0.1'].includes(databaseUrl.hostname);
+  const sslDisabled = process.env.POSTGRES_SSL === 'false';
+  const sslRequired = !localDatabase && !sslDisabled;
+  const pool = new Pool({
+    connectionString,
+    ssl: sslRequired ? { rejectUnauthorized: false } : false,
+  });
+
+  async function setSettingWithClient(client, key, value) {
+    await client.query(
+      `INSERT INTO settings (key, value)
+       VALUES ($1, $2)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [key, String(value)],
+    );
+  }
+
+  return {
+    type: 'postgres',
+    label: 'Postgres database: DATABASE_URL',
+    async initialize() {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS applications (
+          id TEXT PRIMARY KEY,
+          data TEXT NOT NULL,
+          status TEXT NOT NULL,
+          score INTEGER NOT NULL,
+          created_at TEXT,
+          applied_at TEXT,
+          interview_at TEXT,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS profile_versions (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          content TEXT NOT NULL,
+          source TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status);
+        CREATE INDEX IF NOT EXISTS idx_applications_created_at ON applications(created_at);
+        CREATE INDEX IF NOT EXISTS idx_applications_applied_at ON applications(applied_at);
+        CREATE INDEX IF NOT EXISTS idx_applications_interview_at ON applications(interview_at);
+        CREATE INDEX IF NOT EXISTS idx_profile_versions_created_at ON profile_versions(created_at);
+      `);
+    },
+    async countApplications() {
+      const result = await pool.query('SELECT COUNT(*)::int AS count FROM applications');
+      return Number(result.rows[0]?.count ?? 0);
+    },
+    async getSetting(key) {
+      const result = await pool.query('SELECT value FROM settings WHERE key = $1', [key]);
+      return result.rows[0]?.value ?? null;
+    },
+    async setSetting(key, value) {
+      await pool.query(
+        `INSERT INTO settings (key, value)
+         VALUES ($1, $2)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+        [key, String(value)],
+      );
+    },
+    async listApplications() {
+      const result = await pool.query('SELECT data FROM applications ORDER BY score DESC, created_at DESC');
+      return result.rows.map((row) => JSON.parse(row.data));
+    },
+    async replaceApplications(state) {
+      const client = await pool.connect();
+
+      try {
+        await client.query('BEGIN');
+        await client.query('DELETE FROM applications');
+
+        for (const application of state.applications) {
+          await client.query(
+            `INSERT INTO applications
+              (id, data, status, score, created_at, applied_at, interview_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [
+              application.id,
+              JSON.stringify(application),
+              String(application.status ?? 'Saved'),
+              Number(application.score ?? 0),
+              application.createdAt ?? null,
+              application.appliedAt ?? null,
+              application.interviewAt ?? null,
+              state.updatedAt,
+            ],
+          );
+        }
+
+        await setSettingWithClient(client, 'dailyTarget', String(state.dailyTarget));
+        await setSettingWithClient(client, 'currentProfile', state.profile);
+        await setSettingWithClient(client, 'updatedAt', state.updatedAt);
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async listProfileVersions() {
+      const result = await pool.query(
+        'SELECT id, name, content, source, created_at AS "createdAt" FROM profile_versions ORDER BY created_at DESC',
+      );
+      return result.rows;
+    },
+    async insertProfileVersion(version) {
+      await pool.query('INSERT INTO profile_versions (id, name, content, source, created_at) VALUES ($1, $2, $3, $4, $5)', [
+        version.id,
+        version.name,
+        version.content,
+        version.source,
+        version.createdAt,
+      ]);
+    },
+    async getProfileVersion(profileId) {
+      const result = await pool.query('SELECT id, content FROM profile_versions WHERE id = $1', [String(profileId)]);
+      return result.rows[0] ?? null;
+    },
+    async deleteProfileVersion(profileId) {
+      await pool.query('DELETE FROM profile_versions WHERE id = $1', [String(profileId)]);
+    },
+  };
 }
 
 async function migrateLegacyJsonState() {
-  const existingApplications = db.prepare('SELECT COUNT(*) AS count FROM applications').get().count;
+  const existingApplications = await storage.countApplications();
 
-  if (existingApplications > 0 || getSetting('legacyMigrated') === 'true') {
+  if (existingApplications > 0 || (await getSetting('legacyMigrated')) === 'true') {
     return;
   }
 
   try {
     const raw = await readFile(legacyStateFile, 'utf8');
-    writeAppState(JSON.parse(raw));
-    setSetting('legacyMigrated', 'true');
+    await writeAppState(JSON.parse(raw));
+    await setSetting('legacyMigrated', 'true');
   } catch (error) {
     if (error?.code !== 'ENOENT') {
       throw error;
     }
 
-    setSetting('legacyMigrated', 'true');
+    await setSetting('legacyMigrated', 'true');
   }
 }
 
@@ -123,11 +337,11 @@ function sendUnauthorized(response) {
 }
 
 function getSetting(key) {
-  return db.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value ?? null;
+  return storage.getSetting(key);
 }
 
 function setSetting(key, value) {
-  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, String(value));
+  return storage.setSetting(key, value);
 }
 
 function normalizeAppState(payload = {}) {
@@ -141,76 +355,44 @@ function normalizeAppState(payload = {}) {
   };
 }
 
-function readAppState() {
-  const applications = db
-    .prepare('SELECT data FROM applications ORDER BY score DESC, created_at DESC')
-    .all()
-    .map((row) => JSON.parse(row.data));
-  const dailyTarget = Number(getSetting('dailyTarget') ?? 10);
-  const profile = getSetting('currentProfile') ?? '';
-  const profileVersions = readProfileVersions();
-  const hasStoredState = Boolean(getSetting('updatedAt')) || applications.length > 0 || profileVersions.length > 0 || Boolean(profile);
+async function readAppState() {
+  const applications = await storage.listApplications();
+  const dailyTarget = Number((await getSetting('dailyTarget')) ?? 10);
+  const profile = (await getSetting('currentProfile')) ?? '';
+  const profileVersions = await readProfileVersions();
+  const updatedAt = await getSetting('updatedAt');
+  const hasStoredState = Boolean(updatedAt) || applications.length > 0 || profileVersions.length > 0 || Boolean(profile);
 
   return {
     applications,
     dailyTarget: Number.isFinite(dailyTarget) && dailyTarget > 0 ? dailyTarget : 10,
     profile,
-    activeProfileId: getSetting('activeProfileId'),
+    activeProfileId: await getSetting('activeProfileId'),
     profileVersions,
     isStored: hasStoredState,
-    updatedAt: getSetting('updatedAt') ?? new Date().toISOString(),
+    updatedAt: updatedAt ?? new Date().toISOString(),
   };
 }
 
-function writeAppState(payload) {
+async function writeAppState(payload) {
   const state = normalizeAppState({
     ...payload,
     updatedAt: new Date().toISOString(),
   });
+  const applications = state.applications.map((application) => {
+    const id = String(application.id ?? crypto.randomUUID());
+    return { ...application, id };
+  });
 
-  db.exec('BEGIN');
-
-  try {
-    db.prepare('DELETE FROM applications').run();
-
-    for (const application of state.applications) {
-      const id = String(application.id ?? crypto.randomUUID());
-      const normalizedApplication = { ...application, id };
-      db.prepare(
-        `INSERT INTO applications
-          (id, data, status, score, created_at, applied_at, interview_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
-        id,
-        JSON.stringify(normalizedApplication),
-        String(normalizedApplication.status ?? 'Saved'),
-        Number(normalizedApplication.score ?? 0),
-        normalizedApplication.createdAt ?? null,
-        normalizedApplication.appliedAt ?? null,
-        normalizedApplication.interviewAt ?? null,
-        state.updatedAt,
-      );
-    }
-
-    setSetting('dailyTarget', String(state.dailyTarget));
-    setSetting('currentProfile', state.profile);
-    setSetting('updatedAt', state.updatedAt);
-    db.exec('COMMIT');
-  } catch (error) {
-    db.exec('ROLLBACK');
-    throw error;
-  }
-
+  await storage.replaceApplications({ ...state, applications });
   return readAppState();
 }
 
 function readProfileVersions() {
-  return db
-    .prepare('SELECT id, name, content, source, created_at AS createdAt FROM profile_versions ORDER BY created_at DESC')
-    .all();
+  return storage.listProfileVersions();
 }
 
-function addProfileVersion(payload) {
+async function addProfileVersion(payload) {
   const content = String(payload.content ?? '').trim();
   const name = String(payload.name ?? '').trim() || `Profile ${new Date().toLocaleDateString('en-SG')}`;
   const source = String(payload.source ?? 'manual').trim() || 'manual';
@@ -230,16 +412,10 @@ function addProfileVersion(payload) {
     createdAt: new Date().toISOString(),
   };
 
-  db.prepare('INSERT INTO profile_versions (id, name, content, source, created_at) VALUES (?, ?, ?, ?, ?)').run(
-    version.id,
-    version.name,
-    version.content,
-    version.source,
-    version.createdAt,
-  );
+  await storage.insertProfileVersion(version);
 
   if (payload.makeActive !== false) {
-    setActiveProfile(version.id);
+    await setActiveProfile(version.id);
   }
 
   return {
@@ -248,26 +424,24 @@ function addProfileVersion(payload) {
   };
 }
 
-function setActiveProfile(profileId) {
-  const version = db
-    .prepare('SELECT id, content FROM profile_versions WHERE id = ?')
-    .get(String(profileId));
+async function setActiveProfile(profileId) {
+  const version = await storage.getProfileVersion(profileId);
 
   if (!version) {
     return null;
   }
 
-  setSetting('activeProfileId', version.id);
-  setSetting('currentProfile', version.content);
-  setSetting('updatedAt', new Date().toISOString());
+  await setSetting('activeProfileId', version.id);
+  await setSetting('currentProfile', version.content);
+  await setSetting('updatedAt', new Date().toISOString());
   return version;
 }
 
-function deleteProfileVersion(profileId) {
-  db.prepare('DELETE FROM profile_versions WHERE id = ?').run(String(profileId));
+async function deleteProfileVersion(profileId) {
+  await storage.deleteProfileVersion(profileId);
 
-  if (getSetting('activeProfileId') === profileId) {
-    setSetting('activeProfileId', '');
+  if ((await getSetting('activeProfileId')) === profileId) {
+    await setSetting('activeProfileId', '');
   }
 }
 
@@ -404,15 +578,15 @@ function googleRedirectUri(request) {
   return `${baseUrl || (request ? requestOrigin(request) : `http://localhost:${port}`)}/api/gmail/oauth/callback`;
 }
 
-function gmailAuthUrl(request) {
+async function gmailAuthUrl(request) {
   if (!gmailIsConfigured()) {
     return null;
   }
 
   const state = crypto.randomUUID();
   const redirectUri = googleRedirectUri(request);
-  setSetting('gmailOAuthState', state);
-  setSetting('gmailRedirectUri', redirectUri);
+  await setSetting('gmailOAuthState', state);
+  await setSetting('gmailRedirectUri', redirectUri);
 
   const params = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID,
@@ -428,7 +602,7 @@ function gmailAuthUrl(request) {
 }
 
 async function exchangeGoogleCode(code) {
-  const redirectUri = getSetting('gmailRedirectUri') || googleRedirectUri();
+  const redirectUri = (await getSetting('gmailRedirectUri')) || googleRedirectUri();
 
   const response = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
@@ -450,14 +624,14 @@ async function exchangeGoogleCode(code) {
   }
 
   if (payload.refresh_token) {
-    setSetting('gmailRefreshToken', payload.refresh_token);
+    await setSetting('gmailRefreshToken', payload.refresh_token);
   }
 
   return payload;
 }
 
 async function gmailAccessToken() {
-  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN || getSetting('gmailRefreshToken');
+  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN || (await getSetting('gmailRefreshToken'));
 
   if (!gmailIsConfigured() || !refreshToken) {
     return null;
@@ -484,25 +658,25 @@ async function gmailAccessToken() {
   return payload.access_token;
 }
 
-function readGmailSettings() {
-  const maxResults = Number(getSetting('gmailMaxResults') ?? process.env.GMAIL_MAX_RESULTS ?? 10);
+async function readGmailSettings() {
+  const maxResults = Number((await getSetting('gmailMaxResults')) ?? process.env.GMAIL_MAX_RESULTS ?? 10);
 
   return {
     configured: gmailIsConfigured(),
-    connected: Boolean(process.env.GOOGLE_REFRESH_TOKEN || getSetting('gmailRefreshToken')),
-    query: getSetting('gmailQuery') || process.env.GMAIL_QUERY || 'from:linkedin.com newer_than:2d',
+    connected: Boolean(process.env.GOOGLE_REFRESH_TOKEN || (await getSetting('gmailRefreshToken'))),
+    query: (await getSetting('gmailQuery')) || process.env.GMAIL_QUERY || 'from:linkedin.com newer_than:2d',
     maxResults: Number.isFinite(maxResults) && maxResults > 0 ? Math.min(maxResults, 50) : 10,
   };
 }
 
-function writeGmailSettings(payload = {}) {
-  const current = readGmailSettings();
+async function writeGmailSettings(payload = {}) {
+  const current = await readGmailSettings();
   const query = String(payload.query ?? current.query).trim() || current.query;
   const maxResults = Number(payload.maxResults ?? current.maxResults);
   const normalizedMaxResults = Number.isFinite(maxResults) && maxResults > 0 ? Math.min(Math.round(maxResults), 50) : 10;
 
-  setSetting('gmailQuery', query);
-  setSetting('gmailMaxResults', String(normalizedMaxResults));
+  await setSetting('gmailQuery', query);
+  await setSetting('gmailMaxResults', String(normalizedMaxResults));
 
   return readGmailSettings();
 }
@@ -520,7 +694,7 @@ async function fetchGmailLinkedInJobs(options = {}) {
     };
   }
 
-  const settings = writeGmailSettings(options);
+  const settings = await writeGmailSettings(options);
   const query = settings.query;
   const maxResults = settings.maxResults;
   const listUrl = new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');
@@ -819,64 +993,64 @@ const server = createServer(async (request, response) => {
 
   try {
     if (request.method === 'GET' && url.pathname === '/api/health') {
-      sendJson(response, 200, { status: 'ok', storage: 'sqlite' });
+      sendJson(response, 200, { status: 'ok', storage: storage.type });
       return;
     }
 
     if (request.method === 'GET' && url.pathname === '/api/state') {
-      sendJson(response, 200, readAppState());
+      sendJson(response, 200, await readAppState());
       return;
     }
 
     if (request.method === 'PUT' && url.pathname === '/api/state') {
       const payload = await readJson(request);
-      sendJson(response, 200, writeAppState(payload));
+      sendJson(response, 200, await writeAppState(payload));
       return;
     }
 
     if (request.method === 'GET' && url.pathname === '/api/profiles') {
       sendJson(response, 200, {
-        activeProfileId: getSetting('activeProfileId'),
-        profileVersions: readProfileVersions(),
+        activeProfileId: await getSetting('activeProfileId'),
+        profileVersions: await readProfileVersions(),
       });
       return;
     }
 
     if (request.method === 'POST' && url.pathname === '/api/profiles') {
       const payload = await readJson(request);
-      const result = addProfileVersion(payload);
+      const result = await addProfileVersion(payload);
       sendJson(response, result.statusCode, result.payload);
       return;
     }
 
     const activateProfileMatch = url.pathname.match(/^\/api\/profiles\/([^/]+)\/activate$/);
     if (request.method === 'POST' && activateProfileMatch) {
-      const version = setActiveProfile(activateProfileMatch[1]);
-      sendJson(response, version ? 200 : 404, version ? readAppState() : { error: 'Profile version not found.' });
+      const version = await setActiveProfile(activateProfileMatch[1]);
+      sendJson(response, version ? 200 : 404, version ? await readAppState() : { error: 'Profile version not found.' });
       return;
     }
 
     const deleteProfileMatch = url.pathname.match(/^\/api\/profiles\/([^/]+)$/);
     if (request.method === 'DELETE' && deleteProfileMatch) {
-      deleteProfileVersion(deleteProfileMatch[1]);
+      await deleteProfileVersion(deleteProfileMatch[1]);
       sendJson(response, 200, { status: 'deleted' });
       return;
     }
 
     if (request.method === 'GET' && url.pathname === '/api/gmail/auth-url') {
-      const authUrl = gmailAuthUrl(request);
+      const authUrl = await gmailAuthUrl(request);
       sendJson(response, authUrl ? 200 : 400, authUrl ? { url: authUrl } : { error: 'Google OAuth is not configured.' });
       return;
     }
 
     if (request.method === 'GET' && url.pathname === '/api/gmail/settings') {
-      sendJson(response, 200, readGmailSettings());
+      sendJson(response, 200, await readGmailSettings());
       return;
     }
 
     if (request.method === 'PUT' && url.pathname === '/api/gmail/settings') {
       const payload = await readJson(request);
-      sendJson(response, 200, writeGmailSettings(payload));
+      sendJson(response, 200, await writeGmailSettings(payload));
       return;
     }
 
@@ -884,7 +1058,7 @@ const server = createServer(async (request, response) => {
       const code = url.searchParams.get('code');
       const state = url.searchParams.get('state');
 
-      if (!code || state !== getSetting('gmailOAuthState')) {
+      if (!code || state !== (await getSetting('gmailOAuthState'))) {
         sendHtml(response, 400, '<h1>Gmail connection failed</h1><p>Invalid OAuth callback.</p>');
         return;
       }
@@ -928,7 +1102,7 @@ const server = createServer(async (request, response) => {
 
 server.listen(port, () => {
   console.log(`ApplyPilot server listening on http://localhost:${port}`);
-  console.log(`SQLite database: ${dbFile}`);
+  console.log(storage.label);
   console.log(`Model: ${model}`);
   if (process.env.APP_PASSWORD) {
     console.log(`Private auth enabled for user: ${process.env.APP_USERNAME || 'applypilot'}`);

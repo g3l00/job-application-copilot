@@ -8,7 +8,7 @@ React web app for daily job application preparation and tracking.
 - Builds a daily plan from the best pending roles up to your target.
 - Scores pasted job descriptions against a Java/Spring/cloud profile.
 - Generates resume bullets, cover letter drafts, and recruiter message drafts.
-- Stores applications in a local SQLite database through the backend server.
+- Stores applications in SQLite locally or Postgres when `DATABASE_URL` is set.
 - Exports the application tracker to CSV.
 - Imports pasted LinkedIn job alert emails into a daily review queue.
 - Scans LinkedIn job alert emails from Gmail, previews detected jobs, and shows which emails were checked.
@@ -30,17 +30,17 @@ Run the backend server in a second terminal:
 npm.cmd run server
 ```
 
-Open the local URL printed by Vite. The backend stores data in `data/applypilot.sqlite`.
+Open the local URL printed by Vite. Without `DATABASE_URL`, the backend stores data in `data/applypilot.sqlite`.
 
 ## Persistent Tracker Data
 
-Run the local server to save applications, profile versions, and settings to SQLite:
+Run the local server to save applications, profile versions, and settings to the backend database:
 
 ```powershell
 npm.cmd run server
 ```
 
-Without the server, ApplyPilot still has a browser local storage fallback, but the backend database is the source of truth.
+Without the server, ApplyPilot still has a browser local storage fallback, but the backend database is the source of truth. Set `DATABASE_URL` to use Postgres; leave it empty to use local SQLite.
 
 ## Resume/Profile Versions
 
@@ -123,7 +123,7 @@ npm.cmd run start
 
 Set `APP_USERNAME` and `APP_PASSWORD` to enable basic auth.
 
-For Render, use `render.yaml`. You do not need your own hostname; Render gives the service a public `*.onrender.com` URL. A persistent SQLite database needs a persistent disk; Render's docs say persistent disks attach to paid services, while Free web services use an ephemeral filesystem that loses local files on redeploy/restart.
+For Render, use `render.yaml`. You do not need your own hostname; Render gives the service a public `*.onrender.com` URL. The blueprint uses a Free web service plus a Free Render Postgres database, so tracker data is not stored on the web service filesystem.
 
 After Render creates the service, add this Google OAuth redirect URI using your actual Render URL:
 

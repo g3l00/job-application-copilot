@@ -8,9 +8,11 @@ https://applypilot-private.onrender.com
 
 ## Important Storage Note
 
-ApplyPilot uses SQLite at `/app/data/applypilot.sqlite`.
+ApplyPilot uses SQLite locally, but the Render blueprint sets `DATABASE_URL` from a Free Render Postgres database.
 
-Render Free web services have an ephemeral filesystem, so your local SQLite database can disappear after redeploys or restarts. Use the `starter` plan with the persistent disk in `render.yaml` if you want the tracker data and Gmail refresh token to persist.
+Render Free web services have an ephemeral filesystem, so do not rely on local SQLite after deployment. Postgres keeps your tracker data and Gmail refresh token outside the web service container.
+
+Free Render Postgres databases are useful for learning and testing, but they expire after Render's free database period. Upgrade the database later if you want long-term storage.
 
 ## 1. Push to GitHub
 
@@ -26,6 +28,8 @@ Do not commit `.env` or the `data/` folder.
 4. Connect your GitHub repository.
 5. Render will detect `render.yaml`.
 6. Create the service.
+
+Render will also create `applypilot-db` and wire its connection string into `DATABASE_URL`.
 
 Render will ask you to provide secret environment variables:
 
@@ -71,6 +75,8 @@ Password: the APP_PASSWORD you set in Render
 
 Then click `Connect Gmail` again from the Render-hosted app so Google stores the production callback.
 
-## Optional Free Mode
+## Optional SQLite Mode
 
-You can remove the `disk` section from `render.yaml` and change `plan: starter` to `plan: free`, but SQLite data will not be reliable because the filesystem is ephemeral.
+For local development, leave `DATABASE_URL` empty and ApplyPilot will use `data/applypilot.sqlite`.
+
+Avoid SQLite on a Render Free web service because the filesystem is ephemeral.
