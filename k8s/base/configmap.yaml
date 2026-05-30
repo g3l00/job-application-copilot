@@ -7,6 +7,6 @@ data:
   PORT: "8787"
   APP_USERNAME: applypilot
   OPENAI_MODEL: gpt-5.4-mini
-  GMAIL_QUERY: "from:(jobalerts-noreply@linkedin.com) newer_than:30d"
+  GMAIL_QUERY: "in:anywhere from:(jobalerts-noreply@linkedin.com) newer_than:30d"
   GMAIL_MAX_RESULTS: "10"
   GOOGLE_REDIRECT_URI: "https://applypilot.example.com/api/gmail/oauth/callback"

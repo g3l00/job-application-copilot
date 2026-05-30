@@ -13,13 +13,16 @@ const dbFile = join(dataDir, 'applypilot.sqlite');
 const legacyStateFile = join(dataDir, 'app-state.json');
 const staticRoot = join(projectRoot, 'dist');
 const { Pool } = pg;
-const defaultGmailQuery = 'from:(jobalerts-noreply@linkedin.com) newer_than:30d';
+const defaultGmailQuery = 'in:anywhere from:(jobalerts-noreply@linkedin.com) newer_than:30d';
 const legacyDefaultGmailQueries = new Set([
   'from:linkedin.com newer_than:2d',
   'from:jobalerts-noreply@linkedin.com newer_than:2d',
+  'from:(jobalerts-noreply@linkedin.com) newer_than:30d',
 ]);
 const gmailJobAlertFallbackQueries = [
   defaultGmailQuery,
+  'in:anywhere from:jobalerts-noreply@linkedin.com newer_than:30d',
+  'in:anywhere from:(jobalerts-noreply@linkedin.com)',
   'from:jobalerts-noreply@linkedin.com newer_than:30d',
   'from:(jobalerts-noreply@linkedin.com)',
   'from:"jobalerts-noreply@linkedin.com"',
@@ -793,6 +796,7 @@ async function listGmailMessages(token, query, maxResults) {
   const listUrl = new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');
   listUrl.searchParams.set('q', query);
   listUrl.searchParams.set('maxResults', String(maxResults));
+  listUrl.searchParams.set('includeSpamTrash', 'true');
 
   const listResponse = await fetch(listUrl, {
     headers: {

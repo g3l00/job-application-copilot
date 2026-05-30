@@ -550,7 +550,7 @@ function App() {
   const [gmailMaxResults, setGmailMaxResults] = useState(10);
   const [gmailMessage, setGmailMessage] = useState('');
   const [gmailPreviewJobs, setGmailPreviewJobs] = useState<ImportedJob[]>([]);
-  const [gmailQuery, setGmailQuery] = useState('from:(jobalerts-noreply@linkedin.com) newer_than:30d');
+  const [gmailQuery, setGmailQuery] = useState('in:anywhere from:(jobalerts-noreply@linkedin.com) newer_than:30d');
   const [gmailScannedMessages, setGmailScannedMessages] = useState<GmailMessageSummary[]>([]);
   const [notes, setNotes] = useState('');
   const [profile, setProfile] = useState(loadProfile);
