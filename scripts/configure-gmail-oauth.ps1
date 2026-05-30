@@ -1,7 +1,7 @@
 param(
     [string]$ClientId,
     [string]$RedirectUri = "http://localhost:8787/api/gmail/oauth/callback",
-    [string]$GmailQuery = "from:linkedin.com newer_than:2d",
+    [string]$GmailQuery = "from:jobalerts-noreply@linkedin.com newer_than:2d",
     [int]$MaxResults = 10
 )
 

@@ -13,11 +13,14 @@ const dbFile = join(dataDir, 'applypilot.sqlite');
 const legacyStateFile = join(dataDir, 'app-state.json');
 const staticRoot = join(projectRoot, 'dist');
 const { Pool } = pg;
+const defaultGmailQuery = 'from:jobalerts-noreply@linkedin.com newer_than:2d';
+const legacyDefaultGmailQuery = 'from:linkedin.com newer_than:2d';
 
 await mkdir(dataDir, { recursive: true });
 
 const storage = process.env.DATABASE_URL ? createPostgresStorage() : createSqliteStorage();
 await storage.initialize();
+await migrateGmailQueryDefault();
 await migrateLegacyJsonState();
 
 function createSqliteStorage() {
@@ -283,6 +286,14 @@ async function migrateLegacyJsonState() {
     }
 
     await setSetting('legacyMigrated', 'true');
+  }
+}
+
+async function migrateGmailQueryDefault() {
+  const currentQuery = await storage.getSetting('gmailQuery');
+
+  if (currentQuery === legacyDefaultGmailQuery) {
+    await storage.setSetting('gmailQuery', defaultGmailQuery);
   }
 }
 
@@ -664,7 +675,7 @@ async function readGmailSettings() {
   return {
     configured: gmailIsConfigured(),
     connected: Boolean(process.env.GOOGLE_REFRESH_TOKEN || (await getSetting('gmailRefreshToken'))),
-    query: (await getSetting('gmailQuery')) || process.env.GMAIL_QUERY || 'from:linkedin.com newer_than:2d',
+    query: (await getSetting('gmailQuery')) || process.env.GMAIL_QUERY || defaultGmailQuery,
     maxResults: Number.isFinite(maxResults) && maxResults > 0 ? Math.min(maxResults, 50) : 10,
   };
 }

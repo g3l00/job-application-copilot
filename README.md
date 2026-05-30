@@ -60,7 +60,7 @@ Create a Google OAuth client and set these values in `.env`:
 GOOGLE_CLIENT_ID=your-google-oauth-client-id
 GOOGLE_CLIENT_SECRET=your-google-oauth-client-secret
 GOOGLE_REDIRECT_URI=http://localhost:8787/api/gmail/oauth/callback
-GMAIL_QUERY=from:linkedin.com newer_than:2d
+GMAIL_QUERY=from:jobalerts-noreply@linkedin.com newer_than:2d
 ```
 
 Then run the server and click `Connect Gmail`. After approving read-only Gmail access, adjust the Gmail query if needed, click `Scan Gmail`, review the preview, then click `Import preview`.

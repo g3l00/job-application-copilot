@@ -24,7 +24,7 @@ services:
           name: applypilot-db
           property: connectionString
       - key: GMAIL_QUERY
-        value: from:linkedin.com newer_than:2d
+        value: from:jobalerts-noreply@linkedin.com newer_than:2d
       - key: GMAIL_MAX_RESULTS
         value: 10
 
