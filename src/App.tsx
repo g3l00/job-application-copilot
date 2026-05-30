@@ -550,7 +550,7 @@ function App() {
   const [gmailMaxResults, setGmailMaxResults] = useState(10);
   const [gmailMessage, setGmailMessage] = useState('');
   const [gmailPreviewJobs, setGmailPreviewJobs] = useState<ImportedJob[]>([]);
-  const [gmailQuery, setGmailQuery] = useState('from:jobalerts-noreply@linkedin.com newer_than:2d');
+  const [gmailQuery, setGmailQuery] = useState('from:(jobalerts-noreply@linkedin.com) newer_than:30d');
   const [gmailScannedMessages, setGmailScannedMessages] = useState<GmailMessageSummary[]>([]);
   const [notes, setNotes] = useState('');
   const [profile, setProfile] = useState(loadProfile);
@@ -1104,10 +1104,12 @@ function App() {
       const scannedMessages = Array.isArray(payload.scannedMessages) ? payload.scannedMessages : [];
       setGmailPreviewJobs(jobs);
       setGmailScannedMessages(scannedMessages);
+      const usedQueryNote =
+        typeof payload.query === 'string' && payload.query !== gmailQuery ? ` Used fallback query: ${payload.query}.` : '';
       setGmailMessage(
         `Scanned ${payload.messagesScanned ?? 0} email${payload.messagesScanned === 1 ? '' : 's'} and found ${jobs.length} job${
           jobs.length === 1 ? '' : 's'
-        }.`,
+        }.${usedQueryNote}`,
       );
     } catch (error) {
       setGmailMessage(error instanceof Error ? error.message : 'Unable to import Gmail jobs.');

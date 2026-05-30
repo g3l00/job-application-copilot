@@ -13,8 +13,17 @@ const dbFile = join(dataDir, 'applypilot.sqlite');
 const legacyStateFile = join(dataDir, 'app-state.json');
 const staticRoot = join(projectRoot, 'dist');
 const { Pool } = pg;
-const defaultGmailQuery = 'from:jobalerts-noreply@linkedin.com newer_than:2d';
-const legacyDefaultGmailQuery = 'from:linkedin.com newer_than:2d';
+const defaultGmailQuery = 'from:(jobalerts-noreply@linkedin.com) newer_than:30d';
+const legacyDefaultGmailQueries = new Set([
+  'from:linkedin.com newer_than:2d',
+  'from:jobalerts-noreply@linkedin.com newer_than:2d',
+]);
+const gmailJobAlertFallbackQueries = [
+  defaultGmailQuery,
+  'from:jobalerts-noreply@linkedin.com newer_than:30d',
+  'from:(jobalerts-noreply@linkedin.com)',
+  'from:"jobalerts-noreply@linkedin.com"',
+];
 
 await mkdir(dataDir, { recursive: true });
 
@@ -292,7 +301,7 @@ async function migrateLegacyJsonState() {
 async function migrateGmailQueryDefault() {
   const currentQuery = await storage.getSetting('gmailQuery');
 
-  if (currentQuery === legacyDefaultGmailQuery) {
+  if (legacyDefaultGmailQueries.has(currentQuery)) {
     await storage.setSetting('gmailQuery', defaultGmailQuery);
   }
 }
@@ -708,22 +717,35 @@ async function fetchGmailLinkedInJobs(options = {}) {
   const settings = await writeGmailSettings(options);
   const query = settings.query;
   const maxResults = settings.maxResults;
-  const listUrl = new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');
-  listUrl.searchParams.set('q', query);
-  listUrl.searchParams.set('maxResults', String(maxResults));
+  const attemptedQueries = uniqueStrings([query, ...gmailJobAlertFallbackQueries]);
+  let listPayload = null;
+  let usedQuery = query;
+  let lastListError = null;
 
-  const listResponse = await fetch(listUrl, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  });
-  const listPayload = await listResponse.json();
+  for (const candidateQuery of attemptedQueries) {
+    const result = await listGmailMessages(token, candidateQuery, maxResults);
 
-  if (!listResponse.ok) {
+    if (!result.ok) {
+      lastListError = {
+        status: result.status,
+        message: result.payload.error?.message ?? 'Unable to read Gmail messages.',
+      };
+      continue;
+    }
+
+    listPayload = result.payload;
+    usedQuery = candidateQuery;
+
+    if ((listPayload.messages ?? []).length > 0) {
+      break;
+    }
+  }
+
+  if (!listPayload) {
     return {
-      statusCode: listResponse.status,
+      statusCode: lastListError?.status ?? 502,
       payload: {
-        error: listPayload.error?.message ?? 'Unable to read Gmail messages.',
+        error: lastListError?.message ?? 'Unable to read Gmail messages.',
       },
     };
   }
@@ -733,15 +755,9 @@ async function fetchGmailLinkedInJobs(options = {}) {
   const scannedMessages = [];
 
   for (const message of messages) {
-    const messageUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${message.id}?format=full`;
-    const messageResponse = await fetch(messageUrl, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
-    const messagePayload = await messageResponse.json();
+    const messagePayload = await readGmailMessage(token, message.id);
 
-    if (!messageResponse.ok) {
+    if (!messagePayload) {
       continue;
     }
 
@@ -762,13 +778,53 @@ async function fetchGmailLinkedInJobs(options = {}) {
   return {
     statusCode: 200,
     payload: {
-      query,
+      query: usedQuery,
+      requestedQuery: query,
+      attemptedQueries,
       maxResults,
       jobs: uniqueImportedJobs(jobs),
       messagesScanned: messages.length,
       scannedMessages,
     },
   };
+}
+
+async function listGmailMessages(token, query, maxResults) {
+  const listUrl = new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');
+  listUrl.searchParams.set('q', query);
+  listUrl.searchParams.set('maxResults', String(maxResults));
+
+  const listResponse = await fetch(listUrl, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  const listPayload = await listResponse.json();
+
+  return {
+    ok: listResponse.ok,
+    status: listResponse.status,
+    payload: listPayload,
+  };
+}
+
+async function readGmailMessage(token, messageId) {
+  const messageUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?format=full`;
+  const messageResponse = await fetch(messageUrl, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!messageResponse.ok) {
+    return null;
+  }
+
+  return messageResponse.json();
+}
+
+function uniqueStrings(values) {
+  return [...new Set(values.filter(Boolean).map((value) => String(value).trim()).filter(Boolean))];
 }
 
 function gmailHeaders(headers) {
