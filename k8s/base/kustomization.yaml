@@ -12,4 +12,4 @@ resources:
 images:
   - name: ghcr.io/your-github-username/job-application-copilot
     newName: ghcr.io/g3l00/job-application-copilot
-    newTag: sha-e1444b398bed
+    newTag: sha-a3b1c5afcc09
