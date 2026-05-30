@@ -1,0 +1,6 @@
+
+> job-application-copilot@0.1.0 server
+> node server/tailor-server.mjs
+
+ApplyPilot AI server listening on http://localhost:8787
+Model: gpt-5.4-mini

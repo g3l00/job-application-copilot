@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: applypilot-config
+  namespace: applypilot
+data:
+  PORT: "8787"
+  APP_USERNAME: applypilot
+  OPENAI_MODEL: gpt-5.4-mini
+  GMAIL_QUERY: "from:linkedin.com newer_than:2d"
+  GMAIL_MAX_RESULTS: "10"
+  GOOGLE_REDIRECT_URI: "https://applypilot.example.com/api/gmail/oauth/callback"

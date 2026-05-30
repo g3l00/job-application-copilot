@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: applypilot
+  namespace: applypilot
+  labels:
+    app.kubernetes.io/name: applypilot
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: applypilot
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

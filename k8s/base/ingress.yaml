@@ -1,0 +1,25 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: applypilot
+  namespace: applypilot
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "20m"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: applypilot.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: applypilot
+                port:
+                  number: 80
+  # Configure cert-manager or your cloud load balancer before enabling TLS.
+  # tls:
+  #   - hosts:
+  #       - applypilot.example.com
+  #     secretName: applypilot-tls
