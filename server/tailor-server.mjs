@@ -469,10 +469,15 @@ async function deleteProfileVersion(profileId) {
 }
 
 function parseLinkedInAlertEmail(rawEmail) {
-  const normalizedEmail = rawEmail.replace(/\r\n/g, '\n');
-  const lines = normalizedEmail
-    .split('\n')
-    .map((line) => line.trim())
+  const normalizedEmail = prepareEmailForParsing(rawEmail);
+  const lines = emailLines(normalizedEmail);
+
+  const actionIndexes = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => /^(view job|view jobs|apply now|easy apply)$/i.test(line));
+
+  const actionJobs = actionIndexes
+    .map(({ index }) => buildImportedJob(lines.slice(Math.max(0, index - 10), Math.min(lines.length, index + 4)), ''))
     .filter(Boolean);
 
   const urlIndexes = lines
@@ -488,8 +493,8 @@ function parseLinkedInAlertEmail(rawEmail) {
     })
     .filter(Boolean);
 
-  if (jobs.length > 0) {
-    return uniqueImportedJobs(jobs);
+  if (actionJobs.length > 0 || jobs.length > 0) {
+    return uniqueImportedJobs([...actionJobs, ...jobs]);
   }
 
   const blocks = normalizedEmail
@@ -498,6 +503,45 @@ function parseLinkedInAlertEmail(rawEmail) {
     .filter((block) => block.length >= 2);
 
   return uniqueImportedJobs(blocks.map((block) => buildImportedJob(block, '')).filter(Boolean));
+}
+
+function prepareEmailForParsing(rawEmail) {
+  return decodeHtmlEntities(rawEmail)
+    .replace(/\r\n/g, '\n')
+    .replace(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_match, href, label) => {
+      const linkText = stripTags(label).trim();
+      return `\n${linkText}\n${href}\n`;
+    })
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(?:div|p|li|td|tr|h[1-6]|table)>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s*(view jobs?|apply now|easy apply)\s*/gi, '\n$1\n')
+    .replace(/\s*(be an early applicant|actively hiring|promoted)\s*/gi, '\n$1\n')
+    .replace(/[•·|]/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function emailLines(value) {
+  return value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function stripTags(value) {
+  return value.replace(/<[^>]+>/g, ' ');
+}
+
+function decodeHtmlEntities(value) {
+  return value
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
 }
 
 function buildImportedJob(blockLines, url) {
@@ -557,7 +601,7 @@ function cleanUrl(url) {
 }
 
 function isRoleLine(line) {
-  return /developer|engineer|programmer|architect|analyst|consultant|java|spring|backend|software|platform|devops|full stack|full-stack/i.test(line);
+  return /developer|engineer|programmer|architect|analyst|consultant|java|spring|backend|software|platform|devops|full stack|full-stack|cloud|sre|site reliability|technical lead|application support|systems|data engineer|qa/i.test(line);
 }
 
 function isLocationLine(line) {
@@ -862,17 +906,11 @@ function base64UrlDecode(value) {
 }
 
 function stripHtml(value) {
-  return value
+  return prepareEmailForParsing(
+    value
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/\s+\n/g, '\n')
-    .replace(/[ \t]{2,}/g, ' ')
-    .trim();
+    .replace(/<script[\s\S]*?<\/script>/gi, ' '),
+  );
 }
 
 function extractText(responseJson) {

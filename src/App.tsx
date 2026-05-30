@@ -217,11 +217,16 @@ function normalize(value: string): string {
 }
 
 function parseLinkedInAlertEmail(rawEmail: string): ImportedJob[] {
-  const normalizedEmail = rawEmail.replace(/\r\n/g, '\n');
-  const lines = normalizedEmail
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
+  const normalizedEmail = prepareEmailForParsing(rawEmail);
+  const lines = emailLines(normalizedEmail);
+
+  const actionIndexes = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => /^(view job|view jobs|apply now|easy apply)$/i.test(line));
+
+  const actionJobs = actionIndexes
+    .map(({ index }) => buildImportedJob(lines.slice(Math.max(0, index - 10), Math.min(lines.length, index + 4)), ''))
+    .filter((job): job is ImportedJob => Boolean(job));
 
   const urlIndexes = lines
     .map((line, index) => ({ line, index }))
@@ -236,8 +241,8 @@ function parseLinkedInAlertEmail(rawEmail: string): ImportedJob[] {
     })
     .filter((job): job is ImportedJob => Boolean(job));
 
-  if (jobs.length > 0) {
-    return uniqueImportedJobs(jobs);
+  if (actionJobs.length > 0 || jobs.length > 0) {
+    return uniqueImportedJobs([...actionJobs, ...jobs]);
   }
 
   const blocks = normalizedEmail
@@ -250,6 +255,49 @@ function parseLinkedInAlertEmail(rawEmail: string): ImportedJob[] {
       .map((block) => buildImportedJob(block, ''))
       .filter((job): job is ImportedJob => Boolean(job)),
   );
+}
+
+function prepareEmailForParsing(rawEmail: string): string {
+  return decodeHtmlEntities(rawEmail)
+    .replace(/\r\n/g, '\n')
+    .replace(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_match, href: string, label: string) => {
+      const linkText = stripTags(label).trim();
+      return `\n${linkText}\n${href}\n`;
+    })
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(?:div|p|li|td|tr|h[1-6]|table)>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s*(view jobs?|apply now|easy apply)\s*/gi, '\n$1\n')
+    .replace(/\s*(be an early applicant|actively hiring|promoted)\s*/gi, '\n$1\n')
+    .replace(/[•·|]/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function emailLines(value: string): string[] {
+  return value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function stripTags(value: string): string {
+  return value.replace(/<[^>]+>/g, ' ');
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
+function looksLikeGmailUrl(value: string): boolean {
+  return /https?:\/\/mail\.google\.com\/mail\//i.test(value);
 }
 
 function buildImportedJob(blockLines: string[], url: string): ImportedJob | null {
@@ -317,7 +365,7 @@ function companyFromLine(line: string): string {
 }
 
 function isRoleLine(line: string): boolean {
-  return /developer|engineer|programmer|architect|analyst|consultant|java|spring|backend|software|platform|devops|full stack|full-stack/i.test(line);
+  return /developer|engineer|programmer|architect|analyst|consultant|java|spring|backend|software|platform|devops|full stack|full-stack|cloud|sre|site reliability|technical lead|application support|systems|data engineer|qa/i.test(line);
 }
 
 function isLocationLine(line: string): boolean {
@@ -952,6 +1000,11 @@ function App() {
 
   function importEmailJobs(): void {
     if (importableJobs.length === 0) {
+      if (looksLikeGmailUrl(emailImportText)) {
+        setEmailImportMessage('Paste the email content instead of the Gmail browser URL, or use Scan Gmail.');
+        return;
+      }
+
       setEmailImportMessage(
         importedJobs.length > 0 ? 'All parsed jobs are already in the tracker.' : 'No jobs found in this email.',
       );
